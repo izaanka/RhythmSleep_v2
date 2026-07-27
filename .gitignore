@@ -1,0 +1,14 @@
+# PlatformIO
+.pio/
+.vscode/
+.clangd/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+env/
+
+# OS / IDE
+.DS_Store
+*.swp

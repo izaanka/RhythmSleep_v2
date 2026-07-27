@@ -1,0 +1,23 @@
+{
+    "user": {
+        "name": "User",
+        "age": 25,
+        "gender": "male"
+    },
+    "alarm": {
+        "min_wake_hour": 6,
+        "min_wake_minute": 30,
+        "max_wake_hour": 7,
+        "max_wake_minute": 30,
+        "light_sleep_threshold": 3,
+        "alarm_volume": 20
+    },
+    "wifi": {
+        "ssid": "RhythmSleep",
+        "password": "sleep1234",
+        "ap_mode": true
+    },
+    "recording": {
+        "save_raw_eeg": false
+    }
+}
