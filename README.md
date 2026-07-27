@@ -121,20 +121,144 @@ RhythmSleep_v2/
 
 ---
 
-## Neural Network Weight Generation & Custom Training
+## Comprehensive Tutorial: Adjusting & Training Neural Network Weights
 
-### Generating Default Weights
-To generate the pre-programmed weight binary (`weights.bin`) using AASM clinical heuristics and NumPy:
+RhythmSleep uses a 4-layer Multi-Layer Perceptron (MLP) for sleep stage classification. Weights are stored on the SD card as a contiguous binary file (`/model/weights.bin`) containing exactly **1,140 float32 values (4,560 bytes)**.
+
+### Binary Layout Specification
+Parameters are saved in row-major order:
+1. `Layer 1 Weights` (shape: `32 x 16` = 512 floats)
+2. `Layer 1 Biases`  (shape: `32`      = 32 floats)
+3. `Layer 2 Weights` (shape: `16 x 32` = 512 floats)
+4. `Layer 2 Biases`  (shape: `16`      = 16 floats)
+5. `Layer 3 Weights` (shape: `4 x 16`  = 64 floats)
+6. `Layer 3 Biases`  (shape: `4`       = 4 floats)
+
+---
+
+### Method 1: Adjusting Heuristic Weights (`generate_default_weights.py`)
+
+If you want to fine-tune classification sensitivity without training on a large external dataset (for example, adjusting for personal baseline differences like higher baseline Alpha or lower Delta amplitude in older adults), edit `tools/generate_default_weights.py`.
+
+#### Layer 1 Detector Structure
+Layer 1 consists of 32 neurons divided into 4 detector groups (8 neurons per stage):
+
+```python
+# Neurons 0-7: WAKE Detectors
+w1[0:8, 2] = 1.8   # Increase Alpha gain if wake is under-detected
+w1[0:8, 3] = 1.4   # Increase Beta gain for cortical alertness
+w1[0:8, 0] = -1.5  # Negative weight against Delta (anti-Deep)
+
+# Neurons 8-15: LIGHT Sleep Detectors (N1/N2)
+w1[8:16, 1] = 1.6  # Theta power gain
+w1[8:16, 6] = 1.2  # Theta/Alpha ratio gain
+
+# Neurons 16-23: DEEP Sleep Detectors (N3 / Slow-Wave)
+w1[16:24, 0] = 1.8 # Delta power gain (decrease if subject has naturally lower delta)
+w1[16:24, 8] = 1.4 # (Delta + Theta) / (Alpha + Beta) ratio gain
+
+# Neurons 24-31: REM Sleep Detectors
+w1[24:32, 3] = 1.6 # High Beta gain (cortical desynchronization)
+w1[24:32, 10] = 1.5 # High Spectral Entropy gain (mixed frequency)
+w1[24:32, 14] = -0.7 # Negative RMS gain (muscle atonia indicator)
+```
+
+After modifying the script, regenerate `weights.bin` and copy it to your SD card:
 ```bash
 python3 tools/generate_default_weights.py sd_card_contents/model/weights.bin
 ```
 
-### Custom Machine Learning Training (Optional)
-If you collect your own sleep EEG recordings or use datasets like PhysioNet Sleep-EDF:
-1. Train a 4-layer MLP (`16 -> 32 -> 16 -> 4`) using PyTorch, TensorFlow, or Scikit-learn.
-2. Export the 1,140 float32 weights in row-major binary format:
-   `[L1_W (512), L1_B (32), L2_W (512), L2_B (16), L3_W (64), L3_B (4)]`
-3. Copy `weights.bin` to `/model/weights.bin` on your SD card.
+---
+
+### Method 2: Custom Machine Learning Training Pipeline (PyTorch)
+
+You can train a model on real EEG recordings (e.g. PhysioNet Sleep-EDF) using PyTorch or Scikit-learn, and export the weights directly for RhythmSleep.
+
+#### Step 1: PyTorch Model Definition
+```python
+import torch
+import torch.nn as nn
+import numpy as np
+
+class SleepMLP(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(16, 32)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(32, 16)
+        self.relu2 = nn.ReLU()
+        self.fc3 = nn.Linear(16, 4)
+
+    def forward(self, x):
+        x = self.relu1(self.fc1(x))
+        x = self.relu2(self.fc2(x))
+        x = self.fc3(x)
+        return x
+```
+
+#### Step 2: Training & Feature Vector Preparation
+Ensure your 16 input features are normalized to $[0, 1]$ matching ESP32 preprocessing (`config.h`):
+* Band powers normalized by total power.
+* Ratios divided by 10.0 and clamped to $[0, 1]$.
+* Spectral Edge 95% normalized via `(SE95 - 0.5) / 44.5`.
+* Spectral Entropy normalized via `Entropy / 2.5`.
+* Hjorth Activity log-scaled via `log(Act + 1) / log(1001)`.
+
+#### Step 3: Exporting Weights to `weights.bin`
+```python
+def export_esp32_weights(model, output_path="weights.bin"):
+    w1 = model.fc1.weight.detach().cpu().numpy().astype(np.float32) # (32, 16)
+    b1 = model.fc1.bias.detach().cpu().numpy().astype(np.float32)   # (32,)
+    w2 = model.fc2.weight.detach().cpu().numpy().astype(np.float32) # (16, 32)
+    b2 = model.fc2.bias.detach().cpu().numpy().astype(np.float32)   # (16,)
+    w3 = model.fc3.weight.detach().cpu().numpy().astype(np.float32) # (4, 16)
+    b3 = model.fc3.bias.detach().cpu().numpy().astype(np.float32)   # (4,)
+
+    binary_data = np.concatenate([
+        w1.flatten(), b1.flatten(),
+        w2.flatten(), b2.flatten(),
+        w3.flatten(), b3.flatten()
+    ])
+    
+    assert len(binary_data) == 1140, "Weight count mismatch!"
+    binary_data.tofile(output_path)
+    print(f"Exported {len(binary_data)} weights ({len(binary_data)*4} bytes) to {output_path}")
+
+# Call after training loop:
+# export_esp32_weights(model, "sd_card_contents/model/weights.bin")
+```
+
+---
+
+## Scientific & Clinical Sources for Default Heuristics
+
+The default feature extraction rules and heuristic neural network weights in RhythmSleep are grounded in established clinical sleep medicine literature and EEG signal processing research:
+
+1. **American Academy of Sleep Medicine (AASM) Manual for the Scoring of Sleep and Associated Events (2020)**:
+   * Standard 30-second epoch windowing specification.
+   * Standard frequency band definitions:
+     * Delta ($\delta$): $0.5 - 4\text{ Hz}$ (Slow-Wave Sleep / N3 Deep Sleep dominance)
+     * Theta ($\theta$): $4 - 8\text{ Hz}$ (N1/N2 Light Sleep & Sleep Onset marker)
+     * Alpha ($\alpha$): $8 - 13\text{ Hz}$ (Wakefulness with closed eyes; posterior rhythm)
+     * Beta ($\beta$): $13 - 30\text{ Hz}$ (Active cortical alertness / REM paradoxical sleep marker)
+     * Gamma ($\gamma$): $30 - 45\text{ Hz}$ (Cortical processing)
+
+2. **Rechtschaffen & Kales (R&K) Standardization (1968)**:
+   * Foundational paper establishing visual and automated criteria for sleep stage differentiation.
+
+3. **Hjorth Time-Domain Parameters (1970)**:
+   * *Reference*: Hjorth, B. (1970). *"EEG analysis based on time domain properties"*. Electroencephalography and Clinical Neurophysiology, 29(3), 306-310.
+   * Defines **Activity** (variance), **Mobility** (mean frequency estimate), and **Complexity** (frequency change rate), allowing rapid, low-power time-domain characterization on embedded hardware.
+
+4. **PhysioNet Sleep-EDF Database**:
+   * *Reference*: Kemp, B., Zwinderman, A. H., Tuk, B., Kamphuisen, H. A., & Oberye, J. J. (2000). *"Analysis of a sleep-dependent neuronal feedback loop: the slow-wave microcontinuity of the physiology of sleep"*. IEEE Transactions on Biomedical Engineering, 47(9), 1185-1194.
+   * Gold-standard public sleep EEG database used as reference for feature normalization ranges.
+
+5. **Spectral Edge Frequency 95% (SEF95) & Spectral Entropy**:
+   * *References*:
+     * Inouye, T., et al. (1991). *"Quantification of EEG irregularity by use of entropy"*. Electroencephalography and Clinical Neurophysiology, 79(3), 204-210.
+     * Rampil, I. J. (1998). *"A primer for EEG signal processing in anesthesia"*. Anesthesiology, 89(4), 980-1002.
+   * Used to distinguish high-entropy desynchronized cortical states (REM & WAKE) from low-entropy synchronized slow waves (N3 DEEP).
 
 ---
 
