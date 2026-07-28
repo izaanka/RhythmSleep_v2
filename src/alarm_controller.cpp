@@ -3,6 +3,14 @@
 
 static DFRobotDFPlayerMini myDFPlayer;
 
+void AlarmController::setVibrationDuty(uint8_t duty) {
+#if defined(ESP_ARDUINO_VERSION_VAL) && (ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0))
+    ledcWrite(PIN_VIBRATION, duty);
+#else
+    ledcWrite(0, duty);
+#endif
+}
+
 void AlarmController::begin() {
     Serial1.begin(9600, SERIAL_8N1, PIN_DFPLAYER_RX, PIN_DFPLAYER_TX);
     
@@ -14,8 +22,13 @@ void AlarmController::begin() {
         myDFPlayer.volume(currentVolume);
     }
     
+#if defined(ESP_ARDUINO_VERSION_VAL) && (ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0))
     ledcAttach(PIN_VIBRATION, VIB_PWM_FREQ, VIB_PWM_RESOLUTION);
-    ledcWrite(PIN_VIBRATION, 0);
+#else
+    ledcSetup(0, VIB_PWM_FREQ, VIB_PWM_RESOLUTION);
+    ledcAttachPin(PIN_VIBRATION, 0);
+#endif
+    setVibrationDuty(0);
 }
 
 void AlarmController::update() {
@@ -45,13 +58,13 @@ void AlarmController::update() {
         if (vibState) {
             if (millis() - lastVibToggle >= VIB_PULSE_ON_MS) {
                 vibState = false;
-                ledcWrite(PIN_VIBRATION, 0);
+                setVibrationDuty(0);
                 lastVibToggle = millis();
             }
         } else {
             if (millis() - lastVibToggle >= VIB_PULSE_OFF_MS) {
                 vibState = true;
-                ledcWrite(PIN_VIBRATION, 128); // 50% duty
+                setVibrationDuty(128); // 50% duty
                 lastVibToggle = millis();
             }
         }
@@ -61,7 +74,7 @@ void AlarmController::update() {
             currentVolume = ALARM_VOLUME_MAX;
             if (dfPlayerReady) myDFPlayer.volume(currentVolume);
         }
-        ledcWrite(PIN_VIBRATION, 255); // Continuous on
+        setVibrationDuty(255); // Continuous on
     }
 }
 
@@ -79,7 +92,7 @@ void AlarmController::startAlarm() {
     
     vibState = true;
     lastVibToggle = millis();
-    ledcWrite(PIN_VIBRATION, 128); // 50% duty
+    setVibrationDuty(128); // 50% duty
 }
 
 void AlarmController::stopAlarm() {
@@ -87,7 +100,7 @@ void AlarmController::stopAlarm() {
     snoozed = false;
     
     if (dfPlayerReady) myDFPlayer.pause();
-    ledcWrite(PIN_VIBRATION, 0);
+    setVibrationDuty(0);
 }
 
 void AlarmController::snooze(int minutes) {
@@ -97,7 +110,7 @@ void AlarmController::snooze(int minutes) {
         snoozeUntilMs = millis() + (minutes * 60000UL);
         
         if (dfPlayerReady) myDFPlayer.pause();
-        ledcWrite(PIN_VIBRATION, 0);
+        setVibrationDuty(0);
     }
 }
 

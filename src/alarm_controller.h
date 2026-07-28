@@ -15,6 +15,7 @@ public:
     bool isSnoozed();                      // Currently in snooze
     
 private:
+    void setVibrationDuty(uint8_t duty);
     bool alarming = false;
     bool snoozed = false;
     bool dfPlayerReady = false;
