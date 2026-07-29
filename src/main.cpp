@@ -103,11 +103,9 @@ static void eegSamplingTask(void* param) {
             if (eegProcessor.isFFTBufferFull()) {
                 xSemaphoreGive(fftReadySemaphore);
             }
+        } else {
+            vTaskDelay(1); // Feed watchdog and yield to IDLE task
         }
-
-        // Yield briefly to avoid watchdog timeout but maintain timing precision
-        // Use a tight delay — vTaskDelay(1) would be too coarse for 256 Hz
-        taskYIELD();
     }
 }
 

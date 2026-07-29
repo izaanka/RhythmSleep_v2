@@ -547,6 +547,9 @@ public:
     void begin() {
         size_t bufferSize = EEG_FFTS_PER_EPOCH * EEG_SAMPLE_COUNT * sizeof(float);
         epochSamples = (float*)ps_malloc(bufferSize);
+        if (epochSamples == nullptr) {
+            epochSamples = (float*)malloc(bufferSize);
+        }
         epochSampleCount = 0;
         resetEpoch();
         resetFFTBuffer();
@@ -1710,8 +1713,9 @@ static void eegSamplingTask(void* param) {
             if (eegProcessor.isFFTBufferFull()) {
                 xSemaphoreGive(fftReadySemaphore);
             }
+        } else {
+            vTaskDelay(1);
         }
-        taskYIELD();
     }
 }
 

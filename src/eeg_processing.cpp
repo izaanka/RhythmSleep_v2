@@ -11,11 +11,15 @@ void EEGProcessor::begin() {
     // epochSamples needs to hold 30 * 256 = 7680 floats
     size_t bufferSize = EEG_FFTS_PER_EPOCH * EEG_SAMPLE_COUNT * sizeof(float);
     epochSamples = (float*)ps_malloc(bufferSize);
+    if (epochSamples == nullptr) {
+        Serial.println("PSRAM allocation failed or disabled — falling back to internal RAM (malloc)...");
+        epochSamples = (float*)malloc(bufferSize);
+    }
     
     if (epochSamples == nullptr) {
-        Serial.println("ERROR: Failed to allocate epochSamples in PSRAM!");
+        Serial.println("ERROR: Failed to allocate epochSamples memory!");
     } else {
-        Serial.printf("Successfully allocated %u bytes in PSRAM for epochSamples\n", bufferSize);
+        Serial.printf("Successfully allocated %u bytes for epochSamples\n", bufferSize);
     }
     
     // Initialize variables
