@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <ESPAsyncWebServer.h>
+#include <WebServer.h>
 #include <functional>
 #include "config.h"
 
@@ -22,8 +22,6 @@ public:
     
 private:
     void setupRoutes();
-    void handleConfigPost(AsyncWebServerRequest* req, uint8_t* data, size_t len);
-    void sendWebSocketUpdate();
     
     UserConfig* configPtr = nullptr;
     std::function<void(const UserConfig&)> onConfigChange = nullptr;
@@ -35,10 +33,7 @@ private:
     const SleepEpochData* sleepData = nullptr;
     int sleepDataCount = 0;
     
-    unsigned long lastWsUpdate = 0;
-    
-    AsyncWebServer server{WEB_SERVER_PORT};
-    AsyncWebSocket ws{WEBSOCKET_PATH};
+    WebServer server{WEB_SERVER_PORT};
 };
 
 extern const char DASHBOARD_HTML[] PROGMEM;

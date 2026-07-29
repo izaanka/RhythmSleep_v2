@@ -11,7 +11,7 @@
 #include <DFRobotDFPlayerMini.h>
 #include <arduinoFFT.h>
 #include <WiFi.h>
-#include <ESPAsyncWebServer.h>
+#include <WebServer.h>
 #include <ArduinoJson.h>
 
 // =====================================================================
@@ -1521,25 +1521,24 @@ const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
             ctxEeg.stroke(); requestAnimationFrame(drawEeg);
         }
         drawEeg();
-        let ws;
-        function connectWs() {
-            ws = new WebSocket('ws://' + window.location.hostname + '/ws');
-            ws.onopen = () => { document.getElementById('connStatus').className = 'status-dot'; };
-            ws.onclose = () => { document.getElementById('connStatus').className = 'status-dot disconnected'; setTimeout(connectWs, 2000); };
-            ws.onmessage = (e) => {
-                try {
-                    const data = JSON.parse(e.data);
-                    if (data.eeg !== undefined) { eegData[eegIdx] = data.eeg; eegIdx = (eegIdx + 1) % eegCanvas.width; }
-                    if (data.stage !== undefined) { const s = data.stage; const sName = (s >= 0 && s <= 3) ? stages[s] : "UNKNOWN"; const badge = document.getElementById('stageBadge'); badge.textContent = sName; badge.className = 'stage-badge stage-' + sName; }
-                    if (data.conf) { document.getElementById('c-wake').style.width = (data.conf[0]*100) + '%'; document.getElementById('c-light').style.width = (data.conf[1]*100) + '%'; document.getElementById('c-deep').style.width = (data.conf[2]*100) + '%'; document.getElementById('c-rem').style.width = (data.conf[3]*100) + '%'; }
-                    if (data.bands) {
-                        const updateBand = (id, val) => { const p = Math.min(100, Math.max(0, val * 100)); document.getElementById('b-'+id).style.width = p + '%'; document.getElementById('p-'+id).textContent = Math.round(p) + '%'; };
-                        updateBand('delta', data.bands.d); updateBand('theta', data.bands.t); updateBand('alpha', data.bands.a); updateBand('beta', data.bands.b); updateBand('gamma', data.bands.g);
-                    }
-                } catch (e) {}
-            };
+
+        function pollStatus() {
+            fetch('/api/status').then(res => res.json()).then(data => {
+                document.getElementById('connStatus').className = 'status-dot';
+                if (data.eeg !== undefined) { eegData[eegIdx] = data.eeg; eegIdx = (eegIdx + 1) % eegCanvas.width; }
+                if (data.stage !== undefined) { const s = data.stage; const sName = (s >= 0 && s <= 3) ? stages[s] : "UNKNOWN"; const badge = document.getElementById('stageBadge'); badge.textContent = sName; badge.className = 'stage-badge stage-' + sName; }
+                if (data.conf) { document.getElementById('c-wake').style.width = (data.conf[0]*100) + '%'; document.getElementById('c-light').style.width = (data.conf[1]*100) + '%'; document.getElementById('c-deep').style.width = (data.conf[2]*100) + '%'; document.getElementById('c-rem').style.width = (data.conf[3]*100) + '%'; }
+                if (data.bands) {
+                    const updateBand = (id, val) => { const p = Math.min(100, Math.max(0, val * 100)); document.getElementById('b-'+id).style.width = p + '%'; document.getElementById('p-'+id).textContent = Math.round(p) + '%'; };
+                    updateBand('delta', data.bands.d); updateBand('theta', data.bands.t); updateBand('alpha', data.bands.a); updateBand('beta', data.bands.b); updateBand('gamma', data.bands.g);
+                }
+            }).catch(e => {
+                document.getElementById('connStatus').className = 'status-dot disconnected';
+            });
         }
-        connectWs();
+        setInterval(pollStatus, 500);
+        pollStatus();
+
         fetch('/api/config').then(res => res.json()).then(cfg => {
             document.getElementById('cfg_minH').value = cfg.minWakeHour; document.getElementById('cfg_minM').value = cfg.minWakeMinute;
             document.getElementById('cfg_maxH').value = cfg.maxWakeHour; document.getElementById('cfg_maxM').value = cfg.maxWakeMinute;
@@ -1588,16 +1587,11 @@ public:
             WiFi.begin(config.wifiSSID, config.wifiPassword);
         }
         setupRoutes();
-        ws.onEvent([](AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len){});
-        server.addHandler(&ws);
         server.begin();
     }
 
     void update() {
-        if (millis() - lastWsUpdate > WS_UPDATE_INTERVAL) {
-            sendWebSocketUpdate();
-            lastWsUpdate = millis();
-        }
+        server.handleClient();
     }
 
     void setSleepData(const SleepEpochData* data, int count) { sleepData = data; sleepDataCount = count; }
@@ -1615,65 +1609,56 @@ public:
 
 private:
     void setupRoutes() {
-        server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ request->send_P(200, "text/html", DASHBOARD_HTML); });
-        server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request){
+        server.on("/", HTTP_GET, [this]() { server.send_P(200, "text/html", DASHBOARD_HTML); });
+        
+        server.on("/api/status", HTTP_GET, [this]() {
             JsonDocument doc; doc["stage"] = (int)currentStage;
             JsonArray conf = doc["conf"].to<JsonArray>();
             for (int i=0; i<NN_OUTPUT_SIZE; i++) conf.add(confidences[i]);
             JsonObject b = doc["bands"].to<JsonObject>();
             b["d"] = bands.relDelta; b["t"] = bands.relTheta; b["a"] = bands.relAlpha; b["b"] = bands.relBeta; b["g"] = bands.relGamma;
-            String res; serializeJson(doc, res); request->send(200, "application/json", res);
+            doc["eeg"] = latestSample;
+            String res; serializeJson(doc, res); server.send(200, "application/json", res);
         });
-        server.on("/api/sleep", HTTP_GET, [this](AsyncWebServerRequest *request){
-            if (!sleepData || sleepDataCount == 0) { request->send(200, "application/json", "[]"); return; }
+
+        server.on("/api/sleep", HTTP_GET, [this]() {
+            if (!sleepData || sleepDataCount == 0) { server.send(200, "application/json", "[]"); return; }
             JsonDocument doc; JsonArray arr = doc.to<JsonArray>();
             int limit = (sleepDataCount > 200) ? 200 : sleepDataCount;
             for (int i=0; i<limit; i++) {
                 JsonObject obj = arr.add<JsonObject>();
                 obj["stage"] = (int)sleepData[i].stage; obj["confidence"] = sleepData[i].confidence;
             }
-            String res; serializeJson(doc, res); request->send(200, "application/json", res);
+            String res; serializeJson(doc, res); server.send(200, "application/json", res);
         });
-        server.on("/api/config", HTTP_GET, [this](AsyncWebServerRequest *request){
-            if (!configPtr) { request->send(500); return; }
+
+        server.on("/api/config", HTTP_GET, [this]() {
+            if (!configPtr) { server.send(500, "text/plain", "Config Null"); return; }
             JsonDocument doc;
             doc["minWakeHour"] = configPtr->minWakeHour; doc["minWakeMinute"] = configPtr->minWakeMinute;
             doc["maxWakeHour"] = configPtr->maxWakeHour; doc["maxWakeMinute"] = configPtr->maxWakeMinute;
             doc["alarmVolume"] = configPtr->alarmVolume; doc["wifiSSID"] = configPtr->wifiSSID;
             doc["wifiPassword"] = configPtr->wifiPassword; doc["apMode"] = configPtr->apMode; doc["saveRawEEG"] = configPtr->saveRawEEG;
-            String res; serializeJson(doc, res); request->send(200, "application/json", res);
+            String res; serializeJson(doc, res); server.send(200, "application/json", res);
         });
-        server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL, [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-            this->handleConfigPost(request, data, len);
+
+        server.on("/api/config", HTTP_POST, [this]() {
+            if (!configPtr) { server.send(500, "text/plain", "Config Null"); return; }
+            String body = server.arg("plain");
+            JsonDocument doc; DeserializationError err = deserializeJson(doc, body);
+            if (err) { server.send(400, "text/plain", "Invalid JSON"); return; }
+            if (doc.containsKey("minWakeHour")) configPtr->minWakeHour = doc["minWakeHour"];
+            if (doc.containsKey("minWakeMinute")) configPtr->minWakeMinute = doc["minWakeMinute"];
+            if (doc.containsKey("maxWakeHour")) configPtr->maxWakeHour = doc["maxWakeHour"];
+            if (doc.containsKey("maxWakeMinute")) configPtr->maxWakeMinute = doc["maxWakeMinute"];
+            if (doc.containsKey("alarmVolume")) configPtr->alarmVolume = doc["alarmVolume"];
+            if (doc.containsKey("wifiSSID")) strlcpy(configPtr->wifiSSID, doc["wifiSSID"] | "RhythmSleep", sizeof(configPtr->wifiSSID));
+            if (doc.containsKey("wifiPassword")) strlcpy(configPtr->wifiPassword, doc["wifiPassword"] | "sleep1234", sizeof(configPtr->wifiPassword));
+            if (doc.containsKey("apMode")) configPtr->apMode = doc["apMode"];
+            if (doc.containsKey("saveRawEEG")) configPtr->saveRawEEG = doc["saveRawEEG"];
+            if (onConfigChange) onConfigChange(*configPtr);
+            server.send(200, "application/json", "{\"status\":\"ok\"}");
         });
-    }
-
-    void handleConfigPost(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
-        if (!configPtr) { request->send(500); return; }
-        JsonDocument doc; DeserializationError err = deserializeJson(doc, data, len);
-        if (err) { request->send(400, "text/plain", "Invalid JSON"); return; }
-        if (doc.containsKey("minWakeHour")) configPtr->minWakeHour = doc["minWakeHour"];
-        if (doc.containsKey("minWakeMinute")) configPtr->minWakeMinute = doc["minWakeMinute"];
-        if (doc.containsKey("maxWakeHour")) configPtr->maxWakeHour = doc["maxWakeHour"];
-        if (doc.containsKey("maxWakeMinute")) configPtr->maxWakeMinute = doc["maxWakeMinute"];
-        if (doc.containsKey("alarmVolume")) configPtr->alarmVolume = doc["alarmVolume"];
-        if (doc.containsKey("wifiSSID")) strlcpy(configPtr->wifiSSID, doc["wifiSSID"] | "RhythmSleep", sizeof(configPtr->wifiSSID));
-        if (doc.containsKey("wifiPassword")) strlcpy(configPtr->wifiPassword, doc["wifiPassword"] | "sleep1234", sizeof(configPtr->wifiPassword));
-        if (doc.containsKey("apMode")) configPtr->apMode = doc["apMode"];
-        if (doc.containsKey("saveRawEEG")) configPtr->saveRawEEG = doc["saveRawEEG"];
-        if (onConfigChange) onConfigChange(*configPtr);
-        request->send(200, "application/json", "{\"status\":\"ok\"}");
-    }
-
-    void sendWebSocketUpdate() {
-        if (ws.count() == 0) return;
-        JsonDocument doc; doc["stage"] = (int)currentStage;
-        JsonArray conf = doc["conf"].to<JsonArray>();
-        for (int i=0; i<NN_OUTPUT_SIZE; i++) conf.add(confidences[i]);
-        JsonObject b = doc["bands"].to<JsonObject>();
-        b["d"] = bands.relDelta; b["t"] = bands.relTheta; b["a"] = bands.relAlpha; b["b"] = bands.relBeta; b["g"] = bands.relGamma;
-        doc["eeg"] = latestSample;
-        String res; serializeJson(doc, res); ws.textAll(res);
     }
 
     UserConfig* configPtr = nullptr;
@@ -1684,9 +1669,7 @@ private:
     float latestSample = 0;
     const SleepEpochData* sleepData = nullptr;
     int sleepDataCount = 0;
-    unsigned long lastWsUpdate = 0;
-    AsyncWebServer server{WEB_SERVER_PORT};
-    AsyncWebSocket ws{WEBSOCKET_PATH};
+    WebServer server{80};
 };
 #endif
 
