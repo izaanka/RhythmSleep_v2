@@ -3,29 +3,33 @@
 
 bool NeuralNetwork::begin(const char* weightsPath) {
     Serial.println("Initializing Neural Network...");
+    bool loadedFromSD = false;
     
-    if (spiMutex != nullptr) {
-        xSemaphoreTake(spiMutex, portMAX_DELAY);
+    if (weightsPath != nullptr) {
+        if (spiMutex != nullptr) {
+            xSemaphoreTake(spiMutex, portMAX_DELAY);
+        }
+        
+        File file = SD.open(weightsPath, FILE_READ);
+        if (file) {
+            size_t expectedBytes = NN_TOTAL_PARAMS * sizeof(float);
+            size_t bytesRead = file.read((uint8_t*)weights, expectedBytes);
+            file.close();
+            if (bytesRead == expectedBytes) {
+                loadedFromSD = true;
+            }
+        }
+        
+        if (spiMutex != nullptr) {
+            xSemaphoreGive(spiMutex);
+        }
     }
     
-    File file = SD.open(weightsPath, FILE_READ);
-    if (!file) {
-        Serial.printf("ERROR: Failed to open weights file: %s\n", weightsPath);
-        if (spiMutex != nullptr) xSemaphoreGive(spiMutex);
-        return false;
-    }
-    
-    size_t expectedBytes = NN_TOTAL_PARAMS * sizeof(float);
-    size_t bytesRead = file.read((uint8_t*)weights, expectedBytes);
-    file.close();
-    
-    if (spiMutex != nullptr) {
-        xSemaphoreGive(spiMutex);
-    }
-    
-    if (bytesRead != expectedBytes) {
-        Serial.printf("ERROR: Weight file size mismatch! Expected %u, got %u\n", expectedBytes, bytesRead);
-        return false;
+    if (loadedFromSD) {
+        Serial.printf("Neural Network weights loaded from SD card (%s)\n", weightsPath);
+    } else {
+        Serial.println("SD weights unavailable — using embedded default weights in Flash");
+        memcpy_P(weights, DEFAULT_NN_WEIGHTS, sizeof(DEFAULT_NN_WEIGHTS));
     }
     
     // Set up pointers
@@ -38,7 +42,6 @@ bool NeuralNetwork::begin(const char* weightsPath) {
     b3 = &weights[offset]; offset += NN_L3_BIASES;
     
     loaded = true;
-    Serial.println("Neural Network weights loaded successfully.");
     return true;
 }
 

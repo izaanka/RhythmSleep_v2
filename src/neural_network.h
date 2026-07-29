@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.h"
+#include "weights_array.h"
 #include <SD.h>
 
 class NeuralNetwork {
